@@ -14,13 +14,11 @@ try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
 
 const PORT = process.env.PORT || 8000;
 
-/*
-  Resolve o executável do Chrome seguindo esta ordem:
-  1) PUPPETEER_EXECUTABLE_PATH (env)
-  2) Cache do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
-  3) Cache local do Puppeteer: ~/.cache/puppeteer/chrome
-  4) Chrome do Windows (uso local)
-*/
+// Resolve o executável do Chrome seguindo esta ordem:
+// 1) PUPPETEER_EXECUTABLE_PATH (env)
+// 2) Cache do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
+// 3) Cache local do Puppeteer: ~/.cache/puppeteer/chrome
+// 4) Chrome do Windows (uso local)
 function resolveChromeExecutable() {
   // 1) variável de ambiente explícita
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
@@ -108,9 +106,8 @@ app.post('/send-message', async (req, res) => {
     // Caso seja grupo, deve terminar com @g.us
     const isGroup = chatId.endsWith('@g.us');
     if (!isGroup) {
-      // Se já vier como contato com @c.us, usamos direto
+      // Se já vier como contato com @c.us, usamos direto; senão normaliza
       if (!chatId.endsWith('@c.us')) {
-        // Limpa para dígitos e valida E.164 (DDI+DDD+número)
         const digits = chatId.replace(/\D/g, '');
         if (!/^[1-9]\d{9,14}$/.test(digits)) {
           return res.status(400).json({
@@ -118,7 +115,6 @@ app.post('/send-message', async (req, res) => {
             error: 'Formato inválido de numero. Envie em E.164: ex. 5511999999999 (DDI+DDD+número).'
           });
         }
-        // Resolve para JID com getNumberId (evita "No LID for user")
         const wid = await client.getNumberId(digits);
         if (!wid || !wid._serialized) {
           return res.status(404).json({ ok: false, error: 'Número não encontrado no WhatsApp (getNumberId retornou vazio).' });
