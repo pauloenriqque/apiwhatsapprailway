@@ -16,48 +16,71 @@ const PORT = process.env.PORT || 8000;
 
 // Resolve o executável do Chrome seguindo esta ordem:
 // 1) PUPPETEER_EXECUTABLE_PATH (env)
-// 2) Cache do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
-// 3) Cache local do Puppeteer: ~/.cache/puppeteer/chrome
-// 4) Chrome do Windows (uso local)
+// 2) Cache de runtime do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
+// 3) Cache persistido do build no Render: /opt/render/project/src/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
+// 4) Cache local do Puppeteer (~/.cache/puppeteer/chrome)
+// 5) Chrome do Windows (uso local)
 function resolveChromeExecutable() {
-  // 1) variável de ambiente explícita
+  // 0) variável de ambiente explícita
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+    console.log('[Chrome] via env PUPPETEER_EXECUTABLE_PATH');
     return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
 
-  // 2) cache padrão do Render
-  try {
-    const renderCacheRoot = '/opt/render/.cache/puppeteer/chrome';
-    if (fs.existsSync(renderCacheRoot)) {
-      const entries = fs.readdirSync(renderCacheRoot).filter(d => d.startsWith('linux-'));
-      entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); // mais recente primeiro
-      for (const dir of entries) {
-        const candidate = path.join(renderCacheRoot, dir, 'chrome-linux64', 'chrome');
-        if (fs.existsSync(candidate)) return candidate;
-      }
-    }
-  } catch (_) {}
+  const candidates = [];
 
-  // 3) cache do Puppeteer no HOME
-  try {
-    const cacheRoot = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
-    if (fs.existsSync(cacheRoot)) {
-      const entries = fs.readdirSync(cacheRoot).filter(d => d.startsWith('linux-') || d.startsWith('win64-'));
+  // A) cache de runtime do Render
+  (function scanRenderRuntimeCache() {
+    const root = '/opt/render/.cache/puppeteer/chrome';
+    if (fs.existsSync(root)) {
+      const entries = fs.readdirSync(root).filter(d => d.startsWith('linux-'));
       entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
       for (const dir of entries) {
-        const candidateLinux = path.join(cacheRoot, dir, 'chrome-linux64', 'chrome');
-        const candidateWin = path.join(cacheRoot, dir, 'chrome-win64', 'chrome.exe');
-        if (fs.existsSync(candidateLinux)) return candidateLinux;
-        if (fs.existsSync(candidateWin)) return candidateWin;
+        candidates.push(path.join(root, dir, 'chrome-linux64', 'chrome'));
       }
     }
-  } catch (_) {}
+  })();
 
-  // 4) Chrome do Windows (fallback local)
-  const systemChrome = 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe';
-  if (fs.existsSync(systemChrome)) return systemChrome;
+  // B) cache persistido do build no Render
+  (function scanRenderBuildCache() {
+    const root = '/opt/render/project/src/.cache/puppeteer/chrome';
+    if (fs.existsSync(root)) {
+      const entries = fs.readdirSync(root).filter(d => d.startsWith('linux-'));
+      entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const dir of entries) {
+        candidates.push(path.join(root, dir, 'chrome-linux64', 'chrome'));
+      }
+    }
+  })();
 
-  return null; // não encontrado
+  // C) cache local do Puppeteer no HOME
+  (function scanHomeCache() {
+    try {
+      const root = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
+      if (fs.existsSync(root)) {
+        const entries = fs.readdirSync(root).filter(d => d.startsWith('linux-') || d.startsWith('win64-'));
+        entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+        for (const dir of entries) {
+          candidates.push(path.join(root, dir, 'chrome-linux64', 'chrome'));
+          candidates.push(path.join(root, dir, 'chrome-win64', 'chrome.exe'));
+        }
+      }
+    } catch {}
+  })();
+
+  // D) Chrome do Windows (fallback local)
+  candidates.push('C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe');
+
+  // Primeiro path existente vence
+  for (const c of candidates) {
+    if (fs.existsSync(c)) {
+      console.log('[Chrome] detectado em:', c);
+      return c;
+    }
+  }
+
+  console.warn('[Chrome] nenhum executável encontrado nos diretórios esperados.');
+  return null;
 }
 
 const executablePath = resolveChromeExecutable();
@@ -103,10 +126,8 @@ app.post('/send-message', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Parâmetros obrigatórios: numero, message' });
     }
     let chatId = String(numero).trim();
-    // Caso seja grupo, deve terminar com @g.us
     const isGroup = chatId.endsWith('@g.us');
     if (!isGroup) {
-      // Se já vier como contato com @c.us, usamos direto; senão normaliza
       if (!chatId.endsWith('@c.us')) {
         const digits = chatId.replace(/\D/g, '');
         if (!/^[1-9]\d{9,14}$/.test(digits)) {
