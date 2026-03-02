@@ -14,27 +14,25 @@ try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
 
 const PORT = process.env.PORT || 8000;
 
-/**
- * Resolve o caminho do executável do Chrome.
- * Prioridades:
- * 1) PUPPETEER_EXECUTABLE_PATH (env)
- * 2) Cache do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
- * 3) Cache do Puppeteer no HOME (~/.cache/puppeteer/chrome)
- * 4) Chrome do Windows (uso local)
- */
+/*
+  Resolve o executável do Chrome seguindo esta ordem:
+  1) PUPPETEER_EXECUTABLE_PATH (env)
+  2) Cache do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
+  3) Cache local do Puppeteer: ~/.cache/puppeteer/chrome
+  4) Chrome do Windows (uso local)
+*/
 function resolveChromeExecutable() {
   // 1) variável de ambiente explícita
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
 
-  // 2) cache padrão do Render (onde o build salva o download)
-  // Estrutura típica: /opt/render/.cache/puppeteer/chrome/linux-<versao>/chrome-linux64/chrome
+  // 2) cache padrão do Render
   try {
     const renderCacheRoot = '/opt/render/.cache/puppeteer/chrome';
     if (fs.existsSync(renderCacheRoot)) {
       const entries = fs.readdirSync(renderCacheRoot).filter(d => d.startsWith('linux-'));
-      entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); // mais novo primeiro
+      entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); // mais recente primeiro
       for (const dir of entries) {
         const candidate = path.join(renderCacheRoot, dir, 'chrome-linux64', 'chrome');
         if (fs.existsSync(candidate)) return candidate;
@@ -42,7 +40,7 @@ function resolveChromeExecutable() {
     }
   } catch (_) {}
 
-  // 3) cache do Puppeteer no HOME (Linux/Windows)
+  // 3) cache do Puppeteer no HOME
   try {
     const cacheRoot = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
     if (fs.existsSync(cacheRoot)) {
@@ -88,7 +86,7 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Endpoint de status para debug
+// Estado para /status e logs
 let isReady = false;
 let lastState = null;
 let lastAuthAt = null;
@@ -111,9 +109,7 @@ app.post('/send-message', async (req, res) => {
     const isGroup = chatId.endsWith('@g.us');
     if (!isGroup) {
       // Se já vier como contato com @c.us, usamos direto
-      if (chatId.endsWith('@c.us')) {
-        // ok
-      } else {
+      if (!chatId.endsWith('@c.us')) {
         // Limpa para dígitos e valida E.164 (DDI+DDD+número)
         const digits = chatId.replace(/\D/g, '');
         if (!/^[1-9]\d{9,14}$/.test(digits)) {
