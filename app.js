@@ -6,46 +6,66 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+
 let qrcodeTerm = null;
 try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
   // opcional: instale com `npm i qrcode-terminal` para ver QR no terminal
 }
+
 const PORT = process.env.PORT || 8000;
 
-/** Resolve o caminho do executável do Chrome.
+/**
+ * Resolve o caminho do executável do Chrome.
  * Prioridades:
  * 1) PUPPETEER_EXECUTABLE_PATH (env)
- * 2) Chrome baixado no cache do Puppeteer (mais recente)
- * 3) Chrome do sistema (Windows)
+ * 2) Cache do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
+ * 3) Cache do Puppeteer no HOME (~/.cache/puppeteer/chrome)
+ * 4) Chrome do Windows (uso local)
  */
 function resolveChromeExecutable() {
+  // 1) variável de ambiente explícita
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
-  // Tenta achar no cache do Puppeteer (Windows)
+
+  // 2) cache padrão do Render (onde o build salva o download)
+  // Estrutura típica: /opt/render/.cache/puppeteer/chrome/linux-<versao>/chrome-linux64/chrome
   try {
-    const cacheRoot = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
-    if (fs.existsSync(cacheRoot)) {
-      const entries = fs.readdirSync(cacheRoot).filter((d) => d.startsWith('win64-'));
+    const renderCacheRoot = '/opt/render/.cache/puppeteer/chrome';
+    if (fs.existsSync(renderCacheRoot)) {
+      const entries = fs.readdirSync(renderCacheRoot).filter(d => d.startsWith('linux-'));
       entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true })); // mais novo primeiro
       for (const dir of entries) {
-        const candidate = path.join(cacheRoot, dir, 'chrome-win64', 'chrome.exe');
+        const candidate = path.join(renderCacheRoot, dir, 'chrome-linux64', 'chrome');
         if (fs.existsSync(candidate)) return candidate;
       }
     }
   } catch (_) {}
-  // Caminho padrão do Chrome no Windows
-  const systemChrome = 'C\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe';
+
+  // 3) cache do Puppeteer no HOME (Linux/Windows)
+  try {
+    const cacheRoot = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
+    if (fs.existsSync(cacheRoot)) {
+      const entries = fs.readdirSync(cacheRoot).filter(d => d.startsWith('linux-') || d.startsWith('win64-'));
+      entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const dir of entries) {
+        const candidateLinux = path.join(cacheRoot, dir, 'chrome-linux64', 'chrome');
+        const candidateWin = path.join(cacheRoot, dir, 'chrome-win64', 'chrome.exe');
+        if (fs.existsSync(candidateLinux)) return candidateLinux;
+        if (fs.existsSync(candidateWin)) return candidateWin;
+      }
+    }
+  } catch (_) {}
+
+  // 4) Chrome do Windows (fallback local)
+  const systemChrome = 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe';
   if (fs.existsSync(systemChrome)) return systemChrome;
+
   return null; // não encontrado
 }
+
 const executablePath = resolveChromeExecutable();
 console.log('[Chrome]', executablePath ? `usando: ${executablePath}` : 'não encontrado automaticamente. Defina PUPPETEER_EXECUTABLE_PATH ou rode: npx puppeteer browsers install chrome');
-
-// Estado do cliente
-let isReady = false;
-let lastState = null;
-let lastAuthAt = null;
 
 // ----------------- Express + HTTP + Socket.IO -----------------
 const app = express();
@@ -69,6 +89,10 @@ app.get('/', (req, res) => {
 });
 
 // Endpoint de status para debug
+let isReady = false;
+let lastState = null;
+let lastAuthAt = null;
+
 app.get('/status', async (req, res) => {
   let state = null;
   try { state = await client.getState(); } catch (_) {}
@@ -150,15 +174,13 @@ function logToUi(msg) {
 
 client.on('qr', (qr) => {
   // Emite QR para o front como data URL (img src)
-  // O index.html já faz <img src="...">
-  // Vamos enviar no formato data:image/png;base64,... para compatibilidade ampla
   const QRCode = require('qrcode');
   QRCode.toDataURL(qr, { margin: 2, scale: 6 }, (err, url) => {
     if (!err && url) {
       io.emit('qr', url);
       logToUi('QR code gerado. Escaneie com o WhatsApp.');
     } else {
-      logToUi('Falha ao gerar imagem do QR. Exibindo texto no terminal.');
+      logToUi('Falha ao gerar imagem do QR. Veja o terminal.');
     }
   });
   console.log('QR RECEIVED');
