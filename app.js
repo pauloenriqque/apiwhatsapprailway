@@ -31,7 +31,7 @@ function resolveChromeExecutable() {
 
   const candidates = [];
 
-  // A) cache de runtime do Render
+  // Cache de runtime do Render
   (function scanRenderRuntimeCache() {
     const root = '/opt/render/.cache/puppeteer/chrome';
     if (fs.existsSync(root)) {
@@ -43,7 +43,7 @@ function resolveChromeExecutable() {
     }
   })();
 
-  // B) cache persistido do build no Render
+  // Cache persistido do build no Render
   (function scanRenderBuildCache() {
     const root = '/opt/render/project/src/.cache/puppeteer/chrome';
     if (fs.existsSync(root)) {
@@ -55,7 +55,7 @@ function resolveChromeExecutable() {
     }
   })();
 
-  // C) cache local do Puppeteer no HOME
+  // Cache local do Puppeteer no HOME
   (function scanHomeCache() {
     try {
       const root = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
@@ -70,7 +70,7 @@ function resolveChromeExecutable() {
     } catch {}
   })();
 
-  // D) Chrome do Windows (fallback local)
+  // Chrome do Windows (fallback local)
   candidates.push('C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe');
 
   for (const c of candidates) {
@@ -126,7 +126,8 @@ app.get('/status', async (req, res) => {
     state,
     authenticatedAt: lastAuthAt,
     chromeExec: executablePath || null,
-    remoteAuth: !!mongoStore
+    remoteAuth: !!mongoStore,
+    clientId: CLIENT_ID
   });
 });
 
@@ -193,10 +194,7 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
     }
 
     console.log('[MongoDB] conectando...');
-    await mongoose.connect(process.env.MONGODB_URI, {
-      // opções padrão seguras; ajuste se necessário
-      // useNewUrlParser/useUnifiedTopology já são padrão em versões atuais
-    });
+    await mongoose.connect(process.env.MONGODB_URI);
     console.log('[MongoDB] conectado!');
 
     mongoStore = new MongoStore({ mongoose });
@@ -205,7 +203,7 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       authStrategy: new RemoteAuth({
         store: mongoStore,
         clientId: CLIENT_ID,
-        backupSyncIntervalMs: 300000 // 5 min
+        backupSyncIntervalMs: 60000 // salva a sessão a cada 60s
       }),
       puppeteer: {
         headless: 'new',
@@ -214,13 +212,11 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       },
     });
 
-    // Encaminha logs simples para a UI
     function logToUi(msg) {
       try { io.emit('message', msg); } catch (_) {}
     }
 
     client.on('qr', (qr) => {
-      // Emite QR para o front como data URL (img src)
       const QRCode = require('qrcode');
       QRCode.toDataURL(qr, { margin: 2, scale: 6 }, (err, url) => {
         if (!err && url) {
@@ -248,6 +244,12 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
         lastState = await client.getState();
         logToUi(`Estado: ${lastState}`);
       } catch (_) {}
+    });
+
+    // confirma que a sessão foi salva no Mongo
+    client.on('remote_session_saved', () => {
+      try { io.emit('message', '✓ Sessão salva no Mongo (RemoteAuth).'); } catch (_) {}
+      console.log('[RemoteAuth] sessão salva no Mongo.');
     });
 
     client.on('auth_failure', (m) => {
