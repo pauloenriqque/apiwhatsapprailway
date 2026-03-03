@@ -5,7 +5,9 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { MongoStore } = require('wwebjs-mongo');
+const mongoose = require('mongoose');
 
 let qrcodeTerm = null;
 try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
@@ -13,6 +15,7 @@ try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
 }
 
 const PORT = process.env.PORT || 8000;
+const CLIENT_ID = process.env.WWEBJS_CLIENT_ID || 'BOT-ZDG';
 
 // Resolve o executável do Chrome seguindo esta ordem:
 // 1) PUPPETEER_EXECUTABLE_PATH (env)
@@ -21,7 +24,6 @@ const PORT = process.env.PORT || 8000;
 // 4) Cache local do Puppeteer (~/.cache/puppeteer/chrome)
 // 5) Chrome do Windows (uso local)
 function resolveChromeExecutable() {
-  // 0) variável de ambiente explícita
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
     console.log('[Chrome] via env PUPPETEER_EXECUTABLE_PATH');
     return process.env.PUPPETEER_EXECUTABLE_PATH;
@@ -71,7 +73,6 @@ function resolveChromeExecutable() {
   // D) Chrome do Windows (fallback local)
   candidates.push('C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe');
 
-  // Primeiro path existente vence
   for (const c of candidates) {
     if (fs.existsSync(c)) {
       console.log('[Chrome] detectado em:', c);
@@ -112,15 +113,28 @@ let isReady = false;
 let lastState = null;
 let lastAuthAt = null;
 
+// client será criado após conectar ao Mongo
+let client = null;
+let mongoStore = null;
+
 app.get('/status', async (req, res) => {
   let state = null;
-  try { state = await client.getState(); } catch (_) {}
-  res.json({ ok: true, isReady, state, authenticatedAt: lastAuthAt, chromeExec: executablePath || null });
+  try { state = client ? await client.getState() : null; } catch (_) {}
+  res.json({
+    ok: true,
+    isReady,
+    state,
+    authenticatedAt: lastAuthAt,
+    chromeExec: executablePath || null,
+    remoteAuth: !!mongoStore
+  });
 });
 
 // Rota de envio de mensagem
 app.post('/send-message', async (req, res) => {
   try {
+    if (!client) return res.status(503).json({ ok: false, error: 'Cliente ainda não inicializado' });
+
     const { numero, message } = req.body || {};
     if (!numero || !message) {
       return res.status(400).json({ ok: false, error: 'Parâmetros obrigatórios: numero, message' });
@@ -140,7 +154,7 @@ app.post('/send-message', async (req, res) => {
         if (!wid || !wid._serialized) {
           return res.status(404).json({ ok: false, error: 'Número não encontrado no WhatsApp (getNumberId retornou vazio).' });
         }
-        chatId = wid._serialized; // ex.: 5511999999999@c.us
+        chatId = wid._serialized;
       }
     }
     const result = await client.sendMessage(chatId, message);
@@ -170,67 +184,94 @@ app.post('/upload', fileUpload({ createParentPath: true, limits: { fileSize: 20 
 
 server.listen(PORT, () => console.log(`App running on *:${PORT}`));
 
-// ----------------- WhatsApp Web JS -----------------
-const client = new Client({
-  authStrategy: new LocalAuth({ clientId: 'BOT-ZDG' }),
-  puppeteer: {
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    ...(executablePath ? { executablePath } : {}),
-  },
-});
-
-// Encaminha logs simples para a UI
-function logToUi(msg) {
-  try { io.emit('message', msg); } catch (_) {}
-}
-
-client.on('qr', (qr) => {
-  // Emite QR para o front como data URL (img src)
-  const QRCode = require('qrcode');
-  QRCode.toDataURL(qr, { margin: 2, scale: 6 }, (err, url) => {
-    if (!err && url) {
-      io.emit('qr', url);
-      logToUi('QR code gerado. Escaneie com o WhatsApp.');
-    } else {
-      logToUi('Falha ao gerar imagem do QR. Veja o terminal.');
-    }
-  });
-  console.log('QR RECEIVED');
-  if (qrcodeTerm) qrcodeTerm.generate(qr, { small: true }); else console.log(qr);
-});
-
-client.on('authenticated', () => {
-  lastAuthAt = new Date();
-  io.emit('authenticated', { at: lastAuthAt });
-  logToUi('✓ BOT-ZDG autenticado.');
-});
-
-client.on('ready', async () => {
-  isReady = true;
-  io.emit('ready');
-  logToUi('✓ Dispositivo pronto.');
+// ----------------- Inicialização com RemoteAuth + MongoDB -----------------
+(async () => {
   try {
-    lastState = await client.getState();
-    logToUi(`Estado: ${lastState}`);
-  } catch (_) {}
-});
+    if (!process.env.MONGODB_URI) {
+      console.error('[MongoDB] defina a variável de ambiente MONGODB_URI');
+      process.exit(1);
+    }
 
-client.on('auth_failure', (m) => {
-  logToUi(`[auth_failure] ${m}`);
-});
-client.on('disconnected', (reason) => {
-  isReady = false;
-  io.emit('message', `[disconnected] ${reason}`);
-});
+    console.log('[MongoDB] conectando...');
+    await mongoose.connect(process.env.MONGODB_URI, {
+      // opções padrão seguras; ajuste se necessário
+      // useNewUrlParser/useUnifiedTopology já são padrão em versões atuais
+    });
+    console.log('[MongoDB] conectado!');
 
-client.initialize();
+    mongoStore = new MongoStore({ mongoose });
+
+    client = new Client({
+      authStrategy: new RemoteAuth({
+        store: mongoStore,
+        clientId: CLIENT_ID,
+        backupSyncIntervalMs: 300000 // 5 min
+      }),
+      puppeteer: {
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disk-cache-size=104857600'],
+        ...(executablePath ? { executablePath } : {}),
+      },
+    });
+
+    // Encaminha logs simples para a UI
+    function logToUi(msg) {
+      try { io.emit('message', msg); } catch (_) {}
+    }
+
+    client.on('qr', (qr) => {
+      // Emite QR para o front como data URL (img src)
+      const QRCode = require('qrcode');
+      QRCode.toDataURL(qr, { margin: 2, scale: 6 }, (err, url) => {
+        if (!err && url) {
+          io.emit('qr', url);
+          logToUi('QR code gerado. Escaneie com o WhatsApp.');
+        } else {
+          logToUi('Falha ao gerar imagem do QR. Veja o terminal.');
+        }
+      });
+      console.log('QR RECEIVED');
+      if (qrcodeTerm) qrcodeTerm.generate(qr, { small: true }); else console.log(qr);
+    });
+
+    client.on('authenticated', () => {
+      lastAuthAt = new Date();
+      io.emit('authenticated', { at: lastAuthAt });
+      logToUi('✓ BOT-ZDG autenticado (RemoteAuth).');
+    });
+
+    client.on('ready', async () => {
+      isReady = true;
+      io.emit('ready');
+      logToUi('✓ Dispositivo pronto.');
+      try {
+        lastState = await client.getState();
+        logToUi(`Estado: ${lastState}`);
+      } catch (_) {}
+    });
+
+    client.on('auth_failure', (m) => {
+      logToUi(`[auth_failure] ${m}`);
+    });
+
+    client.on('disconnected', (reason) => {
+      isReady = false;
+      io.emit('message', `[disconnected] ${reason}`);
+    });
+
+    await client.initialize();
+  } catch (err) {
+    console.error('[Bootstrap] Falha ao inicializar:', err);
+    process.exit(1);
+  }
+})();
 
 // Graceful shutdown
 function shutdown(signal) {
   console.log(`\n${signal} recebido. Encerrando...`);
   server.close(() => console.log('Servidor HTTP fechado.'));
-  try { client.destroy(); } catch (_) {}
+  try { client?.destroy(); } catch (_) {}
+  try { mongoose.connection?.close?.(); } catch (_) {}
   setTimeout(() => process.exit(0), 500);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
