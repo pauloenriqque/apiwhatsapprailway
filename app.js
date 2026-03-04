@@ -17,12 +17,7 @@ try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
 const PORT = process.env.PORT || 8000;
 const CLIENT_ID = process.env.WWEBJS_CLIENT_ID || 'BOT-ZDG';
 
-// Resolve o executável do Chrome seguindo esta ordem:
-// 1) PUPPETEER_EXECUTABLE_PATH (env)
-// 2) Cache de runtime do Render: /opt/render/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
-// 3) Cache persistido do build no Render: /opt/render/project/src/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome
-// 4) Cache local do Puppeteer (~/.cache/puppeteer/chrome)
-// 5) Chrome do Windows (uso local)
+// ----------------- Detecta o Chrome (suporta Render) -----------------
 function resolveChromeExecutable() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
     console.log('[Chrome] via env PUPPETEER_EXECUTABLE_PATH');
@@ -31,7 +26,7 @@ function resolveChromeExecutable() {
 
   const candidates = [];
 
-  // Cache de runtime do Render
+  // A) cache de runtime do Render
   (function scanRenderRuntimeCache() {
     const root = '/opt/render/.cache/puppeteer/chrome';
     if (fs.existsSync(root)) {
@@ -43,7 +38,7 @@ function resolveChromeExecutable() {
     }
   })();
 
-  // Cache persistido do build no Render
+  // B) cache persistido do build no Render
   (function scanRenderBuildCache() {
     const root = '/opt/render/project/src/.cache/puppeteer/chrome';
     if (fs.existsSync(root)) {
@@ -55,7 +50,7 @@ function resolveChromeExecutable() {
     }
   })();
 
-  // Cache local do Puppeteer no HOME
+  // C) cache local do Puppeteer no HOME
   (function scanHomeCache() {
     try {
       const root = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
@@ -70,7 +65,7 @@ function resolveChromeExecutable() {
     } catch {}
   })();
 
-  // Chrome do Windows (fallback local)
+  // D) Chrome do Windows (fallback local)
   candidates.push('C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe');
 
   for (const c of candidates) {
@@ -224,7 +219,7 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       authStrategy: new RemoteAuth({
         store: mongoStore,
         clientId: CLIENT_ID,
-        backupSyncIntervalMs: 60000 // salva a sessão a cada 60s (mínimo recomendado)
+        backupSyncIntervalMs: 60000 // salva a sessão a cada 60s (mínimo permitido)
       }),
       puppeteer: {
         headless: 'new',
