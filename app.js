@@ -131,6 +131,27 @@ app.get('/status', async (req, res) => {
   });
 });
 
+// Diagnóstico: lista coleções do Mongo
+app.get('/_diag/collections', async (req, res) => {
+  try {
+    const cols = await mongoose.connection.db.listCollections().toArray();
+    res.json({ ok: true, collections: cols.map(c => c.name) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Diagnóstico: verifica documento da sessão (coleção típica: auth_sessions)
+app.get('/_diag/remote', async (req, res) => {
+  try {
+    const col = mongoose.connection.db.collection('auth_sessions');
+    const doc = await col.findOne({ session: CLIENT_ID });
+    res.json({ ok: true, found: !!doc, docExists: !!doc });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Rota de envio de mensagem
 app.post('/send-message', async (req, res) => {
   try {
@@ -203,7 +224,7 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       authStrategy: new RemoteAuth({
         store: mongoStore,
         clientId: CLIENT_ID,
-        backupSyncIntervalMs: 60000 // salva a sessão a cada 60s
+        backupSyncIntervalMs: 60000 // salva a sessão a cada 60s (mínimo recomendado)
       }),
       puppeteer: {
         headless: 'new',
