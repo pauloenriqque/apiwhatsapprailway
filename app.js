@@ -8,6 +8,7 @@ const os = require('os');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
+const DATA_PATH = process.env.WWEBJS_DATA_PATH || path.resolve('./.wwebjs_auth');
 
 let qrcodeTerm = null;
 try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
