@@ -8,7 +8,6 @@ const os = require('os');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
-const DATA_PATH = process.env.WWEBJS_DATA_PATH || path.resolve('./.wwebjs_auth');
 
 let qrcodeTerm = null;
 try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
@@ -17,8 +16,9 @@ try { qrcodeTerm = require('qrcode-terminal'); } catch (_) {
 
 const PORT = process.env.PORT || 8000;
 const CLIENT_ID = process.env.WWEBJS_CLIENT_ID || 'BOT-ZDG';
+const DATA_PATH = process.env.WWEBJS_DATA_PATH || path.resolve('./.wwebjs_auth'); // diretório de trabalho do RemoteAuth
 
-// ----------------- Detecta o Chrome (suporta Render) -----------------
+// ----------------- Resolvedor do Chrome (compatível com Render) -----------------
 function resolveChromeExecutable() {
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
     console.log('[Chrome] via env PUPPETEER_EXECUTABLE_PATH');
@@ -27,7 +27,7 @@ function resolveChromeExecutable() {
 
   const candidates = [];
 
-  // A) cache de runtime do Render
+  // Cache de runtime do Render
   (function scanRenderRuntimeCache() {
     const root = '/opt/render/.cache/puppeteer/chrome';
     if (fs.existsSync(root)) {
@@ -39,7 +39,7 @@ function resolveChromeExecutable() {
     }
   })();
 
-  // B) cache persistido do build no Render
+  // Cache persistido do build no Render
   (function scanRenderBuildCache() {
     const root = '/opt/render/project/src/.cache/puppeteer/chrome';
     if (fs.existsSync(root)) {
@@ -51,7 +51,7 @@ function resolveChromeExecutable() {
     }
   })();
 
-  // C) cache local do Puppeteer no HOME
+  // Cache local do Puppeteer no HOME (fallback)
   (function scanHomeCache() {
     try {
       const root = path.join(os.homedir(), '.cache', 'puppeteer', 'chrome');
@@ -66,7 +66,7 @@ function resolveChromeExecutable() {
     } catch {}
   })();
 
-  // D) Chrome do Windows (fallback local)
+  // Chrome do Windows (uso local)
   candidates.push('C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe');
 
   for (const c of candidates) {
@@ -86,7 +86,7 @@ console.log('[Chrome]', executablePath ? `usando: ${executablePath}` : 'não enc
 // ----------------- Express + HTTP + Socket.IO -----------------
 const app = express();
 const server = http.createServer(app);
-const io = require('socket.io')(server); // usa a v2.x conforme package.json
+const io = require('socket.io')(server); // compatível com v2.x conforme package.json
 
 // Servir index.html e assets estáticos da pasta atual
 app.use(express.static(path.join(__dirname)));
@@ -104,12 +104,12 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Estado para /status e logs
+// Estado e diagnósticos
 let isReady = false;
 let lastState = null;
 let lastAuthAt = null;
 
-// client será criado após conectar ao Mongo
+// Será criado após conectar ao Mongo
 let client = null;
 let mongoStore = null;
 
@@ -123,13 +123,15 @@ app.get('/status', async (req, res) => {
     authenticatedAt: lastAuthAt,
     chromeExec: executablePath || null,
     remoteAuth: !!mongoStore,
-    clientId: CLIENT_ID
+    clientId: CLIENT_ID,
+    dataPath: DATA_PATH
   });
 });
 
 // Diagnóstico: lista coleções do Mongo
 app.get('/_diag/collections', async (req, res) => {
   try {
+    if (!mongoose.connection?.db) return res.status(503).json({ ok: false, error: 'Mongo não inicializado' });
     const cols = await mongoose.connection.db.listCollections().toArray();
     res.json({ ok: true, collections: cols.map(c => c.name) });
   } catch (e) {
@@ -140,6 +142,7 @@ app.get('/_diag/collections', async (req, res) => {
 // Diagnóstico: verifica documento da sessão (coleção típica: auth_sessions)
 app.get('/_diag/remote', async (req, res) => {
   try {
+    if (!mongoose.connection?.db) return res.status(503).json({ ok: false, error: 'Mongo não inicializado' });
     const col = mongoose.connection.db.collection('auth_sessions');
     const doc = await col.findOne({ session: CLIENT_ID });
     res.json({ ok: true, found: !!doc, docExists: !!doc });
@@ -220,7 +223,8 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       authStrategy: new RemoteAuth({
         store: mongoStore,
         clientId: CLIENT_ID,
-        backupSyncIntervalMs: 60000 // salva a sessão a cada 60s (mínimo permitido)
+        dataPath: DATA_PATH,            // garante diretório estável para extrair/compactar
+        backupSyncIntervalMs: 60000     // mínimo permitido pela estratégia
       }),
       puppeteer: {
         headless: 'new',
@@ -233,6 +237,7 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       try { io.emit('message', msg); } catch (_) {}
     }
 
+    // --- Eventos principais ---
     client.on('qr', (qr) => {
       const QRCode = require('qrcode');
       QRCode.toDataURL(qr, { margin: 2, scale: 6 }, (err, url) => {
@@ -263,10 +268,21 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
       } catch (_) {}
     });
 
-    // confirma que a sessão foi salva no Mongo
+    // dispara quando a sessão foi salva no store remoto
     client.on('remote_session_saved', () => {
       try { io.emit('message', '✓ Sessão salva no Mongo (RemoteAuth).'); } catch (_) {}
       console.log('[RemoteAuth] sessão salva no Mongo.');
+    });
+
+    // --- Diagnósticos avançados ---
+    client.on('loading_screen', (percent, message) => {
+      console.log(`[loading_screen] ${percent || 0}% - ${message || ''}`);
+    });
+    client.on('change_state', (state) => {
+      console.log('[change_state]', state);
+    });
+    client.on('error', (err) => {
+      console.error('[client.error]', err);
     });
 
     client.on('auth_failure', (m) => {
@@ -285,7 +301,7 @@ server.listen(PORT, () => console.log(`App running on *:${PORT}`));
   }
 })();
 
-// Graceful shutdown
+// ----------------- Encerramento gracioso -----------------
 function shutdown(signal) {
   console.log(`\n${signal} recebido. Encerrando...`);
   server.close(() => console.log('Servidor HTTP fechado.'));
